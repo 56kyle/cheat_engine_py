@@ -1,13 +1,19 @@
 
 import ctypes
+import struct
+
 import frida
 import sys
 
 from abc import ABC
+
+import pymem.exception
+
 from exceptions import MissingKwargError
 from pymem import Pymem
+from ReadWriteMemory import ReadWriteMemory
 from script_info import ScriptInfo
-from typing import Optional, Union, Callable
+from typing import Union, Callable, SupportsInt
 
 
 class HookInto(ScriptInfo, ABC):
@@ -15,7 +21,7 @@ class HookInto(ScriptInfo, ABC):
     on_leave: Union[Callable, str, None]
 
     def __init__(self, address: Union[str, None] = None, on_enter: Union[Callable, str, None] = None, on_leave: Union[Callable, str, None] = None, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(address=address, **kwargs)
         self.on_enter = on_enter
         self.on_leave = on_leave
 
@@ -60,10 +66,30 @@ class HookInto(ScriptInfo, ABC):
         return self.on_leave
 
 
-def on_message(message, data):
-    print(hex(message['payload']))
-    print(message)
-    print(data)
+class ValueReader(ScriptInfo):
+    def __init__(self, address: Union[str, int, None] = None, **kwargs):
+        super(ValueReader, self).__init__(**kwargs)
+        self.address = address
+        self.value = None
+        #self.rwm = ReadWriteMemory()
+        #self.btd6 = self.rwm.get_process_by_name('BloonsTD6.exe')
+        self.btd6 = Pymem("BloonsTD6.exe")
+
+    def on_message(self, message, data):
+        context = message.get('payload')
+        if context:
+            if context.get('r12') == '0x0':
+                return
+            print(message)
+            self.address = int(context.get('rbx'), 0) + 0x28
+            try:
+                value = self.btd6.read_double(self.address)
+                self.value = value if value > 1 else self.value
+            except pymem.exception.WinAPIError:
+                pass
+
+            print(f'address - {hex(self.address)}')
+            print(f'money - {self.value}')
 
 
 def main():
@@ -77,10 +103,11 @@ def main():
     session = frida.attach("BloonsTD6.exe")
     hook = session.create_script(str(HookInto(
         address=str(int(game_assembly.lpBaseOfDll + 0x368380)),
-        on_enter='send(args[0].toInt32(), this.context.rax);',
-        on_leave='send(args[0].toInt32(), this.context.rax);',
+        #on_enter='send(this.context);',
+        on_leave='send(this.context);',
     )))
-    hook.on('message', on_message)
+    value_reader = ValueReader()
+    hook.on('message', value_reader.on_message)
     hook.load()
     sys.stdin.read()
 

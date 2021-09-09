@@ -7,7 +7,7 @@ class ScriptInfo:
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
-        for k, v in self.kwargs:
+        for k, v in self.kwargs.items():
             setattr(self, k, v)
 
     def __repr__(self) -> str:
