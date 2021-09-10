@@ -1,16 +1,17 @@
 
 import ctypes
-import struct
-
 import frida
+import time
+import struct
 import sys
 
 from abc import ABC
 
-import pymem.exception
+import pymem.ressources.structure
 
 from exceptions import MissingKwargError
 from pymem import Pymem
+from pymem.exception import WinAPIError, ProcessNotFound
 from ReadWriteMemory import ReadWriteMemory
 from script_info import ScriptInfo
 from typing import Union, Callable, SupportsInt
@@ -66,14 +67,17 @@ class HookInto(ScriptInfo, ABC):
         return self.on_leave
 
 
-class ValueReader(ScriptInfo):
+class ValueReader(ScriptInfo, ABC):
     def __init__(self, address: Union[str, int, None] = None, **kwargs):
         super(ValueReader, self).__init__(**kwargs)
         self.address = address
         self.value = None
-        #self.rwm = ReadWriteMemory()
-        #self.btd6 = self.rwm.get_process_by_name('BloonsTD6.exe')
         self.btd6 = Pymem("BloonsTD6.exe")
+
+
+class MoneyReader(ValueReader, ABC):
+    def __init__(self, address: Union[str, int, None] = None, **kwargs):
+        super(MoneyReader, self).__init__(address, **kwargs)
 
     def on_message(self, message, data):
         context = message.get('payload')
@@ -85,35 +89,83 @@ class ValueReader(ScriptInfo):
             try:
                 value = self.btd6.read_double(self.address)
                 self.value = value if value > 1 else self.value
-            except pymem.exception.WinAPIError:
+            except WinAPIError:
                 pass
 
             print(f'address - {hex(self.address)}')
             print(f'money - {self.value}')
 
 
+class CanPlaceReader(ValueReader, ABC):
+    def __init__(self, address: Union[str, int, None] = None, **kwargs):
+        super(CanPlaceReader, self).__init__(address, **kwargs)
+
+    def on_message(self, message, data):
+        print('=========')
+        print(data)
+        print(message)
+        print('=========')
+
+
+money_offset = 0x368380
+placement_zone_offset = 0x529760
+create_tower_offset = 0x9907a0  # Assets.Scripts.Simulation.Towers.TowerManager.CreateTower
+is_eq_after_ref_check_offset = 0x6DE110  # Assets.Scripts.Models.SimulationBehaviors.CreateTowerActionSimBehaviorModel.IsEqualAfterReferenceCheck
+area_place_holder_tower_offset = 0x9905A0  # Assets.Scripts.Simulation.Towers.TowerManager.CreateAreaPlaceholderTower
+update_display_position_offset = 0x98EF70  # Assets.Scripts.Simulation.Towers.Props.Prop.UpdateDisplayPosition
+can_place_offset = 0x634FA0
+
+
 def main():
     game_assembly = None
-    btd6 = Pymem("BloonsTD6.exe")
-    for module in btd6.list_modules():
-        if module.name == 'GameAssembly.dll':
-            game_assembly = module
-            break
-    print(game_assembly)
-    session = frida.attach("BloonsTD6.exe")
-    hook = session.create_script(str(HookInto(
-        address=str(int(game_assembly.lpBaseOfDll + 0x368380)),
-        #on_enter='send(this.context);',
-        on_leave='send(this.context);',
-    )))
-    value_reader = ValueReader()
-    hook.on('message', value_reader.on_message)
-    hook.load()
+    btd6 = None
+    while not isinstance(btd6, Pymem):
+        print('searching for btd6')
+        try:
+            btd6 = Pymem("BloonsTD6.exe")
+        except ProcessNotFound:
+            pass
+    else:
+        print('btd6 found')
+
+    session = frida.attach('BloonsTD6.exe')
+
+    while not isinstance(game_assembly, pymem.ressources.structure.MODULEINFO):
+        print('searching for GameAssembly.dll')
+        for module in btd6.list_modules():
+            if module.name == 'GameAssembly.dll':
+                game_assembly = module
+                break
+
+    print(hex(game_assembly.lpBaseOfDll))
+    #load_money(session, game_assembly)
+    load_can_place(session, game_assembly)
     sys.stdin.read()
 
 
+def load_money(session, game_assembly):
+    money_hook = session.create_script(str(HookInto(
+        address=str(int(game_assembly.lpBaseOfDll + money_offset)),
+        # on_enter='send(this.context);',
+        on_leave='send(this.context);',
+    )))
+    money_reader = MoneyReader()
+    money_hook.on('message', money_reader.on_message)
+    money_hook.load()
+
+
+def load_can_place(session, game_assembly):
+    placement_hook = session.create_script(str(HookInto(
+        address=str(int(game_assembly.lpBaseOfDll + can_place_offset)),
+        on_leave='send(args);',
+    )))
+    placement_reader = CanPlaceReader()
+    placement_hook.on('message', placement_reader.on_message)
+    placement_hook.load()
+
 # 0x368380
 # 0x21090E8
+
 
 if __name__ == '__main__':
     main()
